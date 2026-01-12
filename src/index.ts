@@ -109,10 +109,11 @@ function initializeBot(config: BotConfig): Client {
     if (message.author.bot || !message.mentions.has(client.user!)) return;
 
     const userInput = message.content.replace(new RegExp(`<@!?${client.user!.id}>`, 'g'), '').trim();
+    console.log(`Received message for bot ${config.id}: ${userInput}`); // Added logging
     let replyText: string | null = null;
 
     try {
-      // Kindroid API call
+      console.log(`Attempting Kindroid API for bot ${config.id}`); // Added logging
       const response = await fetch(process.env.KINDROID_INFER_URL!, {
         method: 'POST',
         headers: {
@@ -126,17 +127,22 @@ function initializeBot(config: BotConfig): Client {
         })
       });
 
+      console.log(`Kindroid response status: ${response.status}`); // Added logging
       if (!response.ok) {
-        throw new Error(`Kindroid error: ${response.status} - ${await response.text()}`);
+        const errorText = await response.text();
+        console.error(`Kindroid API error details: ${response.status} - ${errorText}`); // Detailed error
+        throw new Error(`Kindroid error: ${response.status} - ${errorText}`);
       }
 
       const data = await response.json();
       replyText = data.reply?.message?.content || data.reply;
+      console.log(`Kindroid success: ${replyText.slice(0, 50)}...`); // Log success snippet
     } catch (e) {
       console.error('Kindroid error for bot ' + config.id + ':', e);
       
       // Gemini fallback
       try {
+        console.log(`Attempting Gemini fallback for bot ${config.id}`); // Added logging
         const prompt = `You are 2B from Nier: Automata. Keep replies short, witty, slightly melancholic. Respond to: ${userInput}`;
         const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`, {
           method: 'POST',
@@ -147,20 +153,25 @@ function initializeBot(config: BotConfig): Client {
           })
         });
 
+        console.log(`Gemini response status: ${geminiResponse.status}`); // Added logging
         if (!geminiResponse.ok) {
-          throw new Error(`Gemini error: ${geminiResponse.status}`);
+          const errorText = await geminiResponse.text();
+          throw new Error(`Gemini error: ${geminiResponse.status} - ${errorText}`);
         }
 
         const data = await geminiResponse.json();
         replyText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+        console.log(`Gemini success: ${replyText ? replyText.slice(0, 50) + '...' : 'No reply'}`); // Log success
       } catch (fallbackError) {
         console.error('Gemini fallback error for bot ' + config.id + ':', fallbackError);
       }
     }
 
     if (replyText) {
+      console.log(`Sending reply for bot ${config.id}: ${replyText.slice(0, 50)}...`); // Log send
       await message.reply(replyText);
     } else {
+      console.log(`No reply generated for bot ${config.id} - sending error message`); // Log fallback error
       await message.reply('Error occurred. Try again.');
     }
   });
