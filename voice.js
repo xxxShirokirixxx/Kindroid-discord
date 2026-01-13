@@ -11,6 +11,9 @@ const {
   NoSubscriberBehavior,
 } = require("@discordjs/voice");
 
+const https = require('https');
+const unzipper = require('unzipper');
+
 const DEBUG = !!process.env.DEBUG;
 const guildAudioPlayers = new Map();
 
@@ -65,6 +68,34 @@ async function speakInVC(guildId, text) {
     console.error("[Voice] speakInVC error:", e);
   }
 }
+
+async function ensureVoskModel() {
+  const modelDir = process.env.VOSK_MODEL_DIR || './vosk-model-small-en-us-0.15';
+  if (!fs.existsSync(modelDir)) {
+    console.log('Downloading Vosk model...');
+    const zipPath = './vosk-model.zip';
+    await new Promise((resolve, reject) => {
+      https.get('https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip', (res) => {
+        const file = fs.createWriteStream(zipPath);
+        res.pipe(file);
+        file.on('finish', () => file.close(resolve));
+      }).on('error', reject);
+    });
+    await new Promise((resolve, reject) => {
+      fs.createReadStream(zipPath)
+        .pipe(unzipper.Extract({ path: '.' }))
+        .on('close', resolve)
+        .on('error', reject);
+    });
+    fs.unlinkSync(zipPath); // Clean up zip
+    console.log('Vosk model downloaded.');
+  } else {
+    console.log('Vosk model already exists.');
+  }
+}
+
+// Call it at startup
+ensureVoskModel().catch(console.error);
 
 console.log("✅ voice.js (Local XTTS) loaded");
 module.exports = { playAudioInVC, speakInVC };
