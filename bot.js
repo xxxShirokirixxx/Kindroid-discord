@@ -1,4 +1,4 @@
-// bot.js - 2B Discord Bot (Fully Stabilized January 2026)
+// bot.js - 2B Discord Bot (Polished + Stable January 2026)
 
 require('dotenv').config();
 
@@ -22,7 +22,7 @@ const { speakInVC } = require('./voice.js');
 // Embeddings
 const { buildVectorStore, searchVectorStore } = require('./embeddings.js');
 
-// ---------- GLOBAL SAFETY (prevents Railway restart loops) ----------
+// ---------- GLOBAL SAFETY ----------
 process.on('unhandledRejection', (err) => {
   if (err?.message?.includes('No compatible encryption modes')) {
     console.warn('⚠️ Ignoring Discord voice encryption renegotiation error');
@@ -120,6 +120,18 @@ client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}!`);
 });
 
+// ---------- FALLBACK CLEANER ----------
+function cleanFallback(text) {
+  return String(text)
+    // remove ISO timestamps and log separators
+    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*\|\s*/g, '')
+    // remove speaker labels like "Kiri:" or "2B:"
+    .replace(/\b[A-Za-z0-9_]+:\s*/g, '')
+    // collapse whitespace
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // ---------- REPLY GENERATION ----------
 async function generateReply(userText) {
   const safeText =
@@ -150,14 +162,19 @@ ${knowledge}`,
   } catch (err) {
     console.warn('⚠️ Kindroid failed, falling back:', err.message);
 
-    // 🔑 CRITICAL FIX: correct argument order + string safety
     const fallback = await searchVectorStore(
       safeText,
       vectorStore,
       1
     );
 
-    return String(fallback?.[0]?.chunk || '…').trim();
+    const raw = fallback?.[0]?.chunk || '';
+    const cleaned = cleanFallback(raw);
+
+    // frame memory in-character
+    return cleaned
+      ? `I remember something like this… ${cleaned}`.slice(0, replyMaxLen)
+      : '…';
   }
 }
 
@@ -200,7 +217,6 @@ client.on(Events.MessageCreate, async (msg) => {
 
   let reply = await generateReply(input);
 
-  // 🛡️ ABSOLUTE EMPTY PROTECTION
   if (!reply || !reply.trim()) reply = '…';
 
   reply = reply.slice(0, replyMaxLen);
