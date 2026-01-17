@@ -10,10 +10,6 @@ const {
   AudioPlayerStatus,
   NoSubscriberBehavior,
 } = require("@discordjs/voice");
-
-const https = require('https');
-const unzipper = require('unzipper');
-
 const DEBUG = !!process.env.DEBUG;
 const guildAudioPlayers = new Map();
 
@@ -45,6 +41,7 @@ async function playAudioInVC(guildId, filePath) {
     "-f", "mp3",
     "-ar", "48000", "-ac", "2", "-ab", "128k", "pipe:1",
   ]);
+
   const resource = createAudioResource(ff.stdout, { inputType: 'mp3' });
   player.play(resource);
   conn.subscribe(player);
@@ -60,6 +57,7 @@ async function playAudioInVC(guildId, filePath) {
 async function speakInVC(guildId, text) {
   const safeText = normalizeText(text);
   if (!guildId || !safeText) return;
+
   try {
     if (DEBUG) console.log("[Voice] speakInVC:", safeText);
     const filePath = await textToSpeech(safeText);
@@ -69,33 +67,5 @@ async function speakInVC(guildId, text) {
   }
 }
 
-async function ensureVoskModel() {
-  const modelDir = process.env.VOSK_MODEL_DIR || './vosk-model-small-en-us-0.15';
-  if (!fs.existsSync(modelDir)) {
-    console.log('Downloading Vosk model...');
-    const zipPath = './vosk-model.zip';
-    await new Promise((resolve, reject) => {
-      https.get('https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip', (res) => {
-        const file = fs.createWriteStream(zipPath);
-        res.pipe(file);
-        file.on('finish', () => file.close(resolve));
-      }).on('error', reject);
-    });
-    await new Promise((resolve, reject) => {
-      fs.createReadStream(zipPath)
-        .pipe(unzipper.Extract({ path: '.' }))
-        .on('close', resolve)
-        .on('error', reject);
-    });
-    fs.unlinkSync(zipPath); // Clean up zip
-    console.log('Vosk model downloaded.');
-  } else {
-    console.log('Vosk model already exists.');
-  }
-}
-
-// Call it at startup
-ensureVoskModel().catch(console.error);
-
-console.log("✅ voice.js (Local XTTS) loaded");
+console.log("✅ voice.js (ElevenLabs TTS) loaded");
 module.exports = { playAudioInVC, speakInVC };

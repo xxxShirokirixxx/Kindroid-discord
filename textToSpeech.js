@@ -1,26 +1,34 @@
-const { exec } = require('child_process');
+const axios = require('axios');
+const fs = require('fs');
 const path = require('path');
-const util = require('util');
-const execPromise = util.promisify(exec);
 
 async function textToSpeech(text) {
   const outputFile = path.join(__dirname, `tts-${Date.now()}.mp3`);
-  const pythonScript = path.join(__dirname, 'generate_2b_audio.py');
-  const command = `source venv-tts-312/bin/activate && python "${pythonScript}" "${text.replace(/"/g, '\\"')}" "${outputFile}"`;
 
   try {
-    const { stdout, stderr } = await execPromise(command, { shell: '/bin/bash' });
-    console.log('Python TTS output:', stdout);
-    if (stderr) console.warn('Python TTS warnings:', stderr);
+    const response = await axios.post(
+      `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`,
+      {
+        text: text,
+        model_id: 'eleven_multilingual_v2',  // Supports English for 2B; switch to v1 if needed
+        voice_settings: {
+          stability: 0.5,  // Adjust for 2B's calm tone (0-1)
+          similarity_boost: 0.75  // High for cloning fidelity
+        }
+      },
+      {
+        headers: {
+          'xi-api-key': process.env.ELEVENLABS_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        responseType: 'arraybuffer'
+      }
+    );
 
-    // Check if file was created
-    if (!require('fs').existsSync(outputFile)) {
-      throw new Error('MP3 file not generated');
-    }
-
-    return outputFile; // Return path to MP3 for playback
+    fs.writeFileSync(outputFile, response.data);
+    return outputFile;  // Return path to MP3 for playback
   } catch (err) {
-    console.error('TTS failed:', err.message);
+    console.error('ElevenLabs TTS failed:', err.message);
     throw err;
   }
 }
