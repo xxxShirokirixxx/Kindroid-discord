@@ -6,6 +6,8 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const https = require('https');
+const unzipper = require('unzipper');
 
 // Fetch fallback
 let fetchImpl = typeof fetch !== 'undefined' ? fetch.bind(globalThis) : require('node-fetch');
@@ -26,6 +28,55 @@ const { playAudioInVC, speakInVC } = require('./voice.js');
 
 // Embeddings for deeper context in fallbacks
 const { buildVectorStore, searchVectorStore } = require('./embeddings.js');
+
+// Download and unzip Vosk model if not present
+const VOSK_MODEL_URL = 'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip';
+const VOSK_MODEL_DIR = process.env.VOSK_MODEL_DIR || path.join(__dirname, 'vosk-model-small-en-us-0.15');
+
+async function setupVoskModel() {
+  if (fs.existsSync(VOSK_MODEL_DIR)) {
+    console.log('Vosk model already exists.');
+    return;
+  }
+
+  console.log('Downloading Vosk model...');
+  const zipPath = path.join(__dirname, 'vosk-model.zip');
+
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(zipPath);
+    https.get(VOSK_MODEL_URL, (response) => {
+      response.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        console.log('Unzipping Vosk model...');
+        fs.createReadStream(zipPath)
+          .pipe(unzipper.Extract({ path: __dirname }))
+          .on('close', () => {
+            fs.unlinkSync(zipPath);  // Clean up zip
+            console.log('Vosk model ready.');
+            resolve();
+          })
+          .on('error', (err) => {
+            console.error('Unzip error:', err);
+            reject(err);
+          });
+      });
+    }).on('error', (err) => {
+      fs.unlinkSync(zipPath);
+      console.error('Download error:', err);
+      reject(err);
+    });
+  });
+}
+
+// Run setup on startup
+(async () => {
+  try {
+    await setupVoskModel();
+  } catch (err) {
+    console.error('Vosk setup failed:', err);
+  }
+})();
 
 // Load files for context
 const personality = fs.readFileSync('personality.txt', 'utf8').trim();
