@@ -1,166 +1,149 @@
-// embeddings.js — patched with robust error handling and spam suppression
-const fs = require("fs");
-const cosine = require("cosine-similarity");
+// embeddings.js — fully hardened, async-safe, type-safe
+
+const fs = require('fs');
+const cosine = require('cosine-similarity');
+
 let OpenAI = null;
 let client = null;
-
-// If true, only log the first OpenAI embedding failure (avoid log spam)
 let embeddingFailedOnce = false;
 
-// Allow disabling OpenAI embeddings via env var: EMBEDDINGS_ENABLED='false'
-const EMBEDDINGS_ENABLED = process.env.EMBEDDINGS_ENABLED !== "false";
+const EMBEDDINGS_ENABLED = process.env.EMBEDDINGS_ENABLED !== 'false';
 
-// Initialize OpenAI client if available
+// ---------- OPENAI INIT ----------
 if (process.env.OPENAI_API_KEY && EMBEDDINGS_ENABLED) {
   try {
-    OpenAI = require("openai");
+    OpenAI = require('openai');
     client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    console.log("✅ Using OpenAI embeddings (text-embedding-3-small)");
+    console.log('✅ Using OpenAI embeddings (text-embedding-3-small)');
   } catch (e) {
-    console.warn("⚠️ Failed to init OpenAI client, falling back to local:", e.message);
+    console.warn('⚠️ OpenAI init failed, using local embeddings:', e.message);
     client = null;
   }
 } else {
-  if (!process.env.OPENAI_API_KEY) {
-    console.warn("⚠️ No OPENAI_API_KEY set — using local embeddings only.");
-  } else {
-    console.log("ℹ️ EMBEDDINGS_ENABLED=false — using local embeddings only.");
-  }
-  client = null;
+  console.warn('⚠️ No OPENAI_API_KEY set — using local embeddings only.');
 }
 
-// --- Local fallback embedding (bag-of-words vector) ---
+// ---------- LOCAL EMBEDDING ----------
 function localEmbed(text) {
-  const words = (text || "").toLowerCase().split(/\W+/).filter(Boolean);
+  const safe =
+    typeof text === 'string'
+      ? text
+      : JSON.stringify(text ?? '');
+
+  const words = safe.toLowerCase().split(/\W+/).filter(Boolean);
   const freq = {};
   for (const w of words) freq[w] = (freq[w] || 0) + 1;
   return freq;
 }
 
-function cosineLocal(vecA, vecB) {
-  const keys = new Set([...Object.keys(vecA), ...Object.keys(vecB)]);
-  let dot = 0, normA = 0, normB = 0;
+function cosineLocal(a, b) {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  let dot = 0, na = 0, nb = 0;
   for (const k of keys) {
-    const a = vecA[k] || 0;
-    const b = vecB[k] || 0;
-    dot += a * b;
-    normA += a * a;
-    normB += b * b;
+    const x = a[k] || 0;
+    const y = b[k] || 0;
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
   }
-  return normA && normB ? dot / (Math.sqrt(normA) * Math.sqrt(normB)) : 0;
+  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
 }
 
-// --- Chunk text into ~200-word pieces ---
-function chunkText(str, size = 200) {
-  if (!str) return [];
-  const words = str.split(/\s+/);
+// ---------- CHUNK TEXT ----------
+function chunkText(text, size = 200) {
+  if (!text) return [];
+  const words = String(text).split(/\s+/);
   const chunks = [];
-  let current = [];
+  let buf = [];
   let len = 0;
 
   for (const w of words) {
-    if (len + w.length > size && current.length) {
-      chunks.push(current.join(" "));
-      current = [];
+    if (len + w.length > size && buf.length) {
+      chunks.push(buf.join(''));
+      buf = [];
       len = 0;
     }
-    current.push(w);
-    len += w.length + 1;
+    buf.push(w + ' ');
+    len += w.length;
   }
-  if (current.length) chunks.push(current.join(" "));
+
+  if (buf.length) chunks.push(buf.join('').trim());
   return chunks;
 }
 
-// --- Embed text with OpenAI (once), fallback to local ---
+// ---------- EMBED ----------
 async function embedText(text) {
-  if (!text || !String(text).trim()) return localEmbed("");
+  const safe =
+    typeof text === 'string'
+      ? text
+      : JSON.stringify(text ?? '');
+
+  if (!safe.trim()) return localEmbed('');
 
   if (client) {
     try {
       const res = await client.embeddings.create({
-        model: "text-embedding-3-small",
-        input: text
+        model: 'text-embedding-3-small',
+        input: safe,
       });
-      const emb = res?.data?.[0]?.embedding;
-      if (Array.isArray(emb) && emb.length) return emb;
 
+      const emb = res?.data?.[0]?.embedding;
+      if (Array.isArray(emb)) return emb;
+
+      throw new Error('Empty embedding');
+    } catch (e) {
       if (!embeddingFailedOnce) {
-        console.warn("⚠️ OpenAI returned empty embedding, falling back to local.");
+        console.warn('⚠️ Embeddings failed, disabling OpenAI:', e.message);
         embeddingFailedOnce = true;
       }
       client = null;
-    } catch (e) {
-      if (!embeddingFailedOnce) {
-        console.warn("⚠️ Embedding API failed, disabling OpenAI embeddings:", e.message || e);
-        embeddingFailedOnce = true;
-      } else {
-        if (process.env.DEBUG) console.debug("Embedding API still failing:", e.message || e);
-      }
-      client = null; // disable to avoid repeated calls
     }
   }
 
-  return localEmbed(text);
+  return localEmbed(safe);
 }
 
-// --- Build vector store from files ---
-async function buildVectorStore(files, outFile = "vector_store.json") {
-  const MAX_TOTAL_CHUNKS = 1000;
+// ---------- BUILD STORE ----------
+async function buildVectorStore(files) {
   const store = [];
+  const MAX = 1000;
 
   for (const [label, file] of Object.entries(files)) {
     if (!fs.existsSync(file)) continue;
-    const text = fs.readFileSync(file, "utf8");
+    const text = fs.readFileSync(file, 'utf8');
     const chunks = chunkText(text);
 
     for (const chunk of chunks) {
-      if (store.length >= MAX_TOTAL_CHUNKS) break;
-      try {
-        const embedding = await embedText(chunk);
-        store.push({ label, chunk, embedding });
-      } catch (err) {
-        console.warn("⚠️ embedText error, skipping chunk:", err.message || err);
-      }
+      if (store.length >= MAX) break;
+      const embedding = await embedText(chunk);
+      store.push({ label, chunk, embedding });
     }
-  }
-
-  try {
-    fs.writeFileSync(outFile, JSON.stringify(store, null, 2));
-  } catch (e) {
-    console.warn("⚠️ Failed writing vector store:", e.message || e);
   }
 
   return store;
 }
 
-// --- Search vector store (handles mixed OpenAI/local embeddings) ---
+// ---------- SEARCH ----------
 async function searchVectorStore(query, store, topK = 5) {
-  if (!query || !String(query).trim()) return [];
-
   const qEmbed = await embedText(query);
-  if (!qEmbed) return [];
-
-  const qIsArray = Array.isArray(qEmbed);
-  const qIsLocal = typeof qEmbed === "object" && !Array.isArray(qEmbed);
 
   const scored = store.map(item => {
     try {
-      const itemEmb = item.embedding;
-      const itemIsArray = Array.isArray(itemEmb);
-      const itemIsLocal = typeof itemEmb === "object" && !Array.isArray(itemEmb);
+      const a = qEmbed;
+      const b = item.embedding;
 
-      let score;
-      if (qIsArray && itemIsArray) {
-        score = cosine(qEmbed, itemEmb);
+      let score = 0;
+      if (Array.isArray(a) && Array.isArray(b)) {
+        score = cosine(a, b);
       } else {
-        const qLocal = qIsLocal ? qEmbed : localEmbed(query);
-        const itemLocal = itemIsLocal ? itemEmb : localEmbed(item.chunk || "");
-        score = cosineLocal(qLocal, itemLocal);
+        score = cosineLocal(
+          typeof a === 'object' ? a : localEmbed(query),
+          typeof b === 'object' ? b : localEmbed(item.chunk)
+        );
       }
 
       return { ...item, score };
-    } catch (e) {
-      if (process.env.DEBUG) console.debug("Error scoring item:", e);
+    } catch {
       return { ...item, score: -Infinity };
     }
   });
@@ -171,7 +154,9 @@ async function searchVectorStore(query, store, topK = 5) {
     .slice(0, topK);
 }
 
-module.exports = { buildVectorStore, searchVectorStore, embedText, localEmbed };
-
-
-
+module.exports = {
+  buildVectorStore,
+  searchVectorStore,
+  embedText,
+  localEmbed,
+};

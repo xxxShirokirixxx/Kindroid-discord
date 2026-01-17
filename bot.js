@@ -1,4 +1,4 @@
-// bot.js - 2B Discord Bot (Stabilized January 2026)
+// bot.js - 2B Discord Bot (Fully Stabilized January 2026)
 
 require('dotenv').config();
 
@@ -22,7 +22,16 @@ const { speakInVC } = require('./voice.js');
 // Embeddings
 const { buildVectorStore, searchVectorStore } = require('./embeddings.js');
 
-// ---------- VOSK SETUP (SAFE) ----------
+// ---------- GLOBAL SAFETY (prevents Railway restart loops) ----------
+process.on('unhandledRejection', (err) => {
+  if (err?.message?.includes('No compatible encryption modes')) {
+    console.warn('⚠️ Ignoring Discord voice encryption renegotiation error');
+    return;
+  }
+  console.error('Unhandled rejection:', err);
+});
+
+// ---------- VOSK SETUP ----------
 const VOSK_MODEL_URL =
   'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip';
 const VOSK_MODEL_DIR =
@@ -113,11 +122,16 @@ client.once('ready', () => {
 
 // ---------- REPLY GENERATION ----------
 async function generateReply(userText) {
+  const safeText =
+    typeof userText === 'string'
+      ? userText
+      : JSON.stringify(userText ?? '');
+
   try {
     const res = await axios.post(
       process.env.KINDROID_INFER_URL,
       {
-        prompt: userText,
+        prompt: safeText,
         system: `You are 2B from NieR: Automata.
 ${personality}
 ${memories}
@@ -132,12 +146,18 @@ ${knowledge}`,
       }
     );
 
-    return res.data?.text || '';
+    return String(res.data?.text || '').trim();
   } catch (err) {
     console.warn('⚠️ Kindroid failed, falling back:', err.message);
 
-    const fallback = searchVectorStore(vectorStore, userText, 1);
-    return fallback?.[0]?.text || '…I have nothing to say.';
+    // 🔑 CRITICAL FIX: correct argument order + string safety
+    const fallback = await searchVectorStore(
+      safeText,
+      vectorStore,
+      1
+    );
+
+    return String(fallback?.[0]?.chunk || '…').trim();
   }
 }
 
@@ -156,7 +176,6 @@ client.on(Events.MessageCreate, async (msg) => {
       adapterCreator: channel.guild.voiceAdapterCreator,
       selfDeaf: false,
       selfMute: false,
-      // 🔑 CRITICAL FIX
       encryptionModes: [
         'aead_aes256_gcm_rtpsize',
         'aead_xchacha20_poly1305_rtpsize',
@@ -180,10 +199,9 @@ client.on(Events.MessageCreate, async (msg) => {
   saveMemory();
 
   let reply = await generateReply(input);
-  reply = reply.trim();
 
-  // 🛡️ EMPTY MESSAGE PROTECTION
-  if (!reply) reply = '…';
+  // 🛡️ ABSOLUTE EMPTY PROTECTION
+  if (!reply || !reply.trim()) reply = '…';
 
   reply = reply.slice(0, replyMaxLen);
 
@@ -191,7 +209,11 @@ client.on(Events.MessageCreate, async (msg) => {
 
   const vc = getVoiceConnection(msg.guild.id);
   if (vc && vc.state.status === VoiceConnectionStatus.Ready) {
-    await speakInVC(msg.guild.id, reply);
+    try {
+      await speakInVC(msg.guild.id, reply);
+    } catch (e) {
+      console.warn('⚠️ Voice playback failed:', e.message);
+    }
   }
 });
 
