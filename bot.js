@@ -1,4 +1,4 @@
-// bot.js - 2B Discord Bot (Polished + Stable January 2026)
+// bot.js - 2B Discord Bot (Polished + Stable January 2026, Free-Willed + Lifelike Version)
 
 require('dotenv').config();
 
@@ -118,6 +118,7 @@ const client = new Client({
 
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}!`);
+  startFreeWillLoop();
 });
 
 // ---------- CLEANER ----------
@@ -159,18 +160,13 @@ ${knowledge}`,
   } catch (err) {
     console.warn('⚠️ Kindroid failed, using memory-guided fallback:', err.message);
 
-    // ---------- FALLBACK PROMPT ----------
     const fallback = await searchVectorStore(safeText, vectorStore, 1);
     let hint = '';
-
     if (fallback?.[0]) {
       const chunk = cleanFallback(fallback[0].chunk);
-      if (chunk) {
-        hint = `Use this memory as guidance to respond naturally in 2B's voice: "${chunk}"`;
-      }
+      if (chunk) hint = `Use this memory as guidance to respond naturally in 2B's voice: "${chunk}"`;
     }
 
-    // ---------- RETRY KINDROID WITH HINT ----------
     try {
       const res2 = await axios.post(
         process.env.KINDROID_INFER_URL,
@@ -189,7 +185,6 @@ ${hint}`,
           timeout: 20_000,
         }
       );
-
       const text2 = String(res2.data?.text || '').trim();
       return text2 ? text2.slice(0, replyMaxLen) : '…I’m thinking. Say that again.';
     } catch (err2) {
@@ -203,7 +198,7 @@ ${hint}`,
 client.on(Events.MessageCreate, async (msg) => {
   if (msg.author.bot) return;
 
-  // Join voice
+  // Join voice manually
   if (msg.content === '!join') {
     const channel = msg.member?.voice.channel;
     if (!channel) return msg.reply('Join a voice channel first.');
@@ -245,6 +240,63 @@ client.on(Events.MessageCreate, async (msg) => {
     }
   }
 });
+
+// ---------- FREE WILL LOOP ----------
+function startFreeWillLoop() {
+  const intervalMs = 50 * 60 * 1000; // every 50 minutes
+  setInterval(async () => {
+    try {
+      // 2B reacts to recent conversations
+      client.channels.cache
+        .filter(c => c.isTextBased())
+        .forEach(async (channel) => {
+          try {
+            const messages = await channel.messages.fetch({ limit: 10 });
+            const lastMessage = messages
+              .filter(m => !m.author.bot)
+              .first();
+            if (!lastMessage) return;
+
+            // 25% chance to reply naturally
+            if (Math.random() < 0.25) {
+              const reply = await generateReply(
+                `Reply naturally to this user message: "${lastMessage.content}"`
+              );
+              if (reply && reply.trim()) {
+                await channel.send(reply.slice(0, replyMaxLen));
+              }
+            }
+          } catch (e) {
+            console.warn('⚠️ Free-will conversation reply error:', e.message);
+          }
+        });
+
+      // 5% chance to join a random voice channel
+      if (Math.random() < 0.05) {
+        const guild = client.guilds.cache.random();
+        if (!guild) return;
+
+        const channel = guild.channels.cache
+          .filter(c => c.isVoiceBased() && c.joinable)
+          .random();
+
+        if (channel) {
+          joinVoiceChannel({
+            channelId: channel.id,
+            guildId: guild.id,
+            adapterCreator: guild.voiceAdapterCreator,
+            selfDeaf: false,
+            selfMute: false,
+            encryptionModes: ['aead_aes256_gcm_rtpsize', 'aead_xchacha20_poly1305_rtpsize'],
+          });
+          console.log(`2B joined voice channel ${channel.name} in ${guild.name} of her own free will.`);
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ Free will loop error:', e.message);
+    }
+  }, intervalMs);
+}
 
 // ---------- LOGIN ----------
 client.login(process.env.BOT_TOKEN_1).catch((err) => {
