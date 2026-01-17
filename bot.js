@@ -145,6 +145,7 @@ ${personality}
 ${memories}
 ${freeWill}
 ${knowledge}`,
+        requester: client.user.id // ✅ added requester field
       },
       {
         headers: {
@@ -177,6 +178,7 @@ ${knowledge}
 ${freeWill}
 ${memories}
 ${hint}`,
+          requester: client.user.id // ✅ added requester field
         },
         {
           headers: {
