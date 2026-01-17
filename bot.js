@@ -1,5 +1,4 @@
-// bot.js - 2B Discord Bot (Updated January 2026)
-// Integrated Kindroid with fallbacks, personality files, !join/voice, free cloning, and better logging + retries
+// bot.js - 2B Discord Bot (Stabilized January 2026)
 
 require('dotenv').config();
 
@@ -9,35 +8,25 @@ const axios = require('axios');
 const https = require('https');
 const unzipper = require('unzipper');
 
-// Fetch fallback
-let fetchImpl =
-  typeof fetch !== 'undefined'
-    ? fetch.bind(globalThis)
-    : require('node-fetch');
-
 // Discord imports
 const { Client, GatewayIntentBits, Events } = require('discord.js');
 const {
   joinVoiceChannel,
   getVoiceConnection,
+  VoiceConnectionStatus,
 } = require('@discordjs/voice');
 
-// TTS / voice
+// Voice / TTS
 const { speakInVC } = require('./voice.js');
 
-// Embeddings for fallback replies
+// Embeddings
 const { buildVectorStore, searchVectorStore } = require('./embeddings.js');
 
-
-// --------------------
-// VOSK SETUP (AUTO-DOWNLOAD)
-// --------------------
-
+// ---------- VOSK SETUP (SAFE) ----------
 const VOSK_MODEL_URL =
   'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip';
 const VOSK_MODEL_DIR =
-  process.env.VOSK_MODEL_DIR ||
-  path.join(__dirname, 'vosk-model-small-en-us-0.15');
+  process.env.VOSK_MODEL_DIR || path.join(__dirname, 'vosk-model-small-en-us-0.15');
 
 async function setupVoskModel() {
   if (fs.existsSync(VOSK_MODEL_DIR)) {
@@ -50,137 +39,64 @@ async function setupVoskModel() {
 
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(zipPath);
-    https
-      .get(VOSK_MODEL_URL, (response) => {
-        response.pipe(file);
-        file.on('finish', () => {
-          file.close();
-          console.log('Unzipping Vosk model...');
-          fs.createReadStream(zipPath)
-            .pipe(unzipper.Extract({ path: __dirname }))
-            .on('close', () => {
-              fs.unlinkSync(zipPath);
-              console.log('Vosk model ready.');
-              resolve();
-            })
-            .on('error', reject);
-        });
-      })
-      .on('error', reject);
+    https.get(VOSK_MODEL_URL, (res) => {
+      res.pipe(file);
+      file.on('finish', () => {
+        console.log('Unzipping Vosk model...');
+        fs.createReadStream(zipPath)
+          .pipe(unzipper.Extract({ path: __dirname }))
+          .on('close', () => {
+            fs.unlinkSync(zipPath);
+            console.log('Vosk model ready.');
+            resolve();
+          })
+          .on('error', reject);
+      });
+    }).on('error', reject);
   });
 }
 
-(async () => {
+setupVoskModel().catch(console.error);
+
+// ---------- LOAD CONTEXT FILES ----------
+function readFileSafe(name) {
   try {
-    await setupVoskModel();
-  } catch (err) {
-    console.error('Vosk setup failed:', err);
+    return fs.readFileSync(name, 'utf8').trim();
+  } catch {
+    return '';
   }
-})();
+}
 
+const personality = readFileSafe('personality.txt');
+const memories = readFileSafe('memories.txt');
+const freeWill = readFileSafe('free-will.txt');
+const knowledge = readFileSafe('knowledge.txt');
 
-// --------------------
-// CONTEXT FILES
-// --------------------
+const replyMaxLen = parseInt(process.env.REPLY_MAX_LEN || '200', 10);
 
-const personality = fs.readFileSync('personality.txt', 'utf8').trim();
-const memories = fs.readFileSync('memories.txt', 'utf8').trim();
-const freeWill = fs.readFileSync('free-will.txt', 'utf8').trim();
-const knowledge = fs.readFileSync('knowledge.txt', 'utf8').trim();
-
-const replyMaxLen = parseInt(process.env.REPLY_MAX_LEN || 200);
-
-
-// --------------------
-// VECTOR STORE
-// --------------------
-
-const vectorFiles = {
-  personality: 'personality.txt',
-  memories: 'memories.txt',
-  freeWill: 'free-will.txt',
-  knowledge: 'knowledge.txt',
-};
-
+// ---------- VECTOR STORE ----------
 let vectorStore = [];
-
 (async () => {
-  vectorStore = await buildVectorStore(vectorFiles);
+  vectorStore = await buildVectorStore({
+    personality: 'personality.txt',
+    memories: 'memories.txt',
+    freeWill: 'free-will.txt',
+    knowledge: 'knowledge.txt',
+  });
   console.log(`Vector store built with ${vectorStore.length} chunks.`);
 })();
 
+// ---------- MEMORY ----------
+const memoryPath = path.join(__dirname, 'memory.json');
+let memory = fs.existsSync(memoryPath)
+  ? JSON.parse(fs.readFileSync(memoryPath, 'utf8'))
+  : {};
 
-// --------------------
-// MEMORY
-// --------------------
-
-function loadJson(file) {
-  return fs.existsSync(file)
-    ? JSON.parse(fs.readFileSync(file, 'utf8'))
-    : {};
+function saveMemory() {
+  fs.writeFileSync(memoryPath, JSON.stringify(memory, null, 2));
 }
 
-function saveJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-}
-
-let memory = loadJson('memory.json');
-
-
-// --------------------
-// REPLY GENERATION (🔥 FIX)
-// --------------------
-
-async function generateReply(userInput, userId, username) {
-  // 1️⃣ Kindroid first
-  try {
-    if (process.env.KINDROID_API_KEY && process.env.KINDROID_INFER_URL) {
-      const res = await axios.post(
-        process.env.KINDROID_INFER_URL,
-        {
-          message: userInput,
-          user_id: userId,
-          username: username,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.KINDROID_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          timeout: 15000,
-        }
-      );
-
-      if (res.data?.reply) {
-        return res.data.reply.slice(0, replyMaxLen);
-      }
-    }
-  } catch (err) {
-    console.warn('⚠️ Kindroid failed, falling back:', err.message);
-  }
-
-  // 2️⃣ Vector fallback
-  try {
-    const results = await searchVectorStore(userInput, vectorStore, 3);
-    if (results?.length) {
-      return results
-        .map((r) => r.text)
-        .join(' ')
-        .slice(0, replyMaxLen);
-    }
-  } catch (err) {
-    console.warn('⚠️ Vector fallback failed:', err.message);
-  }
-
-  // 3️⃣ Never crash
-  return '…I don’t have an answer right now.';
-}
-
-
-// --------------------
-// DISCORD CLIENT
-// --------------------
-
+// ---------- DISCORD CLIENT ----------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -195,74 +111,92 @@ client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}!`);
 });
 
+// ---------- REPLY GENERATION ----------
+async function generateReply(userText) {
+  try {
+    const res = await axios.post(
+      process.env.KINDROID_INFER_URL,
+      {
+        prompt: userText,
+        system: `You are 2B from NieR: Automata.
+${personality}
+${memories}
+${freeWill}
+${knowledge}`,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.KINDROID_API_KEY}`,
+        },
+        timeout: 20_000,
+      }
+    );
 
-// --------------------
-// MESSAGE HANDLER
-// --------------------
+    return res.data?.text || '';
+  } catch (err) {
+    console.warn('⚠️ Kindroid failed, falling back:', err.message);
 
+    const fallback = searchVectorStore(vectorStore, userText, 1);
+    return fallback?.[0]?.text || '…I have nothing to say.';
+  }
+}
+
+// ---------- MESSAGE HANDLER ----------
 client.on(Events.MessageCreate, async (msg) => {
   if (msg.author.bot) return;
 
-  // Join VC
-  if (msg.content.startsWith('!join')) {
-    const channel = msg.member?.voice?.channel;
+  // Join voice
+  if (msg.content === '!join') {
+    const channel = msg.member?.voice.channel;
     if (!channel) return msg.reply('Join a voice channel first.');
 
     joinVoiceChannel({
       channelId: channel.id,
-      guildId: msg.guild.id,
-      adapterCreator: msg.guild.voiceAdapterCreator,
+      guildId: channel.guild.id,
+      adapterCreator: channel.guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: false,
+      // 🔑 CRITICAL FIX
+      encryptionModes: [
+        'aead_aes256_gcm_rtpsize',
+        'aead_xchacha20_poly1305_rtpsize',
+      ],
     });
 
-    return msg.reply('Joined voice channel.');
+    return msg.reply('…Connected.');
   }
 
-  // Leave VC
-  if (msg.content.startsWith('!leave')) {
-    const connection = getVoiceConnection(msg.guild.id);
-    if (connection) {
-      connection.destroy();
-      return msg.reply('Left the voice channel.');
-    }
-    return msg.reply('Not in a voice channel.');
-  }
-
-  // Only respond when mentioned
   if (!msg.mentions.has(client.user)) return;
 
-  const userInput = msg.content
+  const input = msg.content
     .replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '')
     .trim();
 
-  try {
-    const userId = msg.author.id;
-    const username = msg.author.username;
+  if (!input) return;
 
-    memory[userId] = memory[userId] || [];
-    memory[userId].push({ role: 'user', content: userInput });
-    if (memory[userId].length > 10) memory[userId].shift();
-    saveJson('memory.json', memory);
+  memory[msg.author.id] = memory[msg.author.id] || [];
+  memory[msg.author.id].push({ role: 'user', content: input });
+  memory[msg.author.id] = memory[msg.author.id].slice(-10);
+  saveMemory();
 
-    const replyText = await generateReply(userInput, userId, username);
+  let reply = await generateReply(input);
+  reply = reply.trim();
 
-    await msg.reply(replyText);
+  // 🛡️ EMPTY MESSAGE PROTECTION
+  if (!reply) reply = '…';
 
-    const connection = getVoiceConnection(msg.guild.id);
-    if (connection) {
-      await speakInVC(msg.guild.id, replyText);
-    }
-  } catch (err) {
-    console.error('Handler error:', err);
-    msg.channel.send('Error occurred. Try again.').catch(() => {});
+  reply = reply.slice(0, replyMaxLen);
+
+  await msg.reply(reply);
+
+  const vc = getVoiceConnection(msg.guild.id);
+  if (vc && vc.state.status === VoiceConnectionStatus.Ready) {
+    await speakInVC(msg.guild.id, reply);
   }
 });
 
-
-// --------------------
-// LOGIN
-// --------------------
-
+// ---------- LOGIN ----------
 client.login(process.env.BOT_TOKEN_1).catch((err) => {
-  console.error('Login fail:', err);
+  console.error('Login failed:', err);
   process.exit(1);
 });
