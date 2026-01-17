@@ -120,25 +120,20 @@ client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}!`);
 });
 
-// ---------- FALLBACK CLEANER ----------
+// ---------- CLEANER ----------
 function cleanFallback(text) {
   return String(text)
-    // remove ISO timestamps and log separators
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*\|\s*/g, '')
-    // remove speaker labels like "Kiri:" or "2B:"
     .replace(/\b[A-Za-z0-9_]+:\s*/g, '')
-    // collapse whitespace
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 // ---------- REPLY GENERATION ----------
 async function generateReply(userText) {
-  const safeText =
-    typeof userText === 'string'
-      ? userText
-      : JSON.stringify(userText ?? '');
+  const safeText = typeof userText === 'string' ? userText : JSON.stringify(userText ?? '');
 
+  // ---------- PRIMARY ATTEMPT ----------
   try {
     const res = await axios.post(
       process.env.KINDROID_INFER_URL,
@@ -158,23 +153,49 @@ ${knowledge}`,
       }
     );
 
-    return String(res.data?.text || '').trim();
+    const text = String(res.data?.text || '').trim();
+    if (text) return text.slice(0, replyMaxLen);
+    throw new Error('Empty reply');
   } catch (err) {
-    console.warn('⚠️ Kindroid failed, falling back:', err.message);
+    console.warn('⚠️ Kindroid failed, using memory-guided fallback:', err.message);
 
-    const fallback = await searchVectorStore(
-      safeText,
-      vectorStore,
-      1
-    );
+    // ---------- FALLBACK PROMPT ----------
+    const fallback = await searchVectorStore(safeText, vectorStore, 1);
+    let hint = '';
 
-    const raw = fallback?.[0]?.chunk || '';
-    const cleaned = cleanFallback(raw);
+    if (fallback?.[0]) {
+      const chunk = cleanFallback(fallback[0].chunk);
+      if (chunk) {
+        hint = `Use this memory as guidance to respond naturally in 2B's voice: "${chunk}"`;
+      }
+    }
 
-    // frame memory in-character
-    return cleaned
-      ? `I remember something like this… ${cleaned}`.slice(0, replyMaxLen)
-      : '…';
+    // ---------- RETRY KINDROID WITH HINT ----------
+    try {
+      const res2 = await axios.post(
+        process.env.KINDROID_INFER_URL,
+        {
+          prompt: safeText,
+          system: `${personality}
+${knowledge}
+${freeWill}
+${memories}
+${hint}`,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.KINDROID_API_KEY}`,
+          },
+          timeout: 20_000,
+        }
+      );
+
+      const text2 = String(res2.data?.text || '').trim();
+      return text2 ? text2.slice(0, replyMaxLen) : '…I’m thinking. Say that again.';
+    } catch (err2) {
+      console.warn('⚠️ Fallback generation also failed:', err2.message);
+      return '…I’m thinking. Say that again.';
+    }
   }
 }
 
@@ -193,10 +214,7 @@ client.on(Events.MessageCreate, async (msg) => {
       adapterCreator: channel.guild.voiceAdapterCreator,
       selfDeaf: false,
       selfMute: false,
-      encryptionModes: [
-        'aead_aes256_gcm_rtpsize',
-        'aead_xchacha20_poly1305_rtpsize',
-      ],
+      encryptionModes: ['aead_aes256_gcm_rtpsize', 'aead_xchacha20_poly1305_rtpsize'],
     });
 
     return msg.reply('…Connected.');
@@ -204,10 +222,7 @@ client.on(Events.MessageCreate, async (msg) => {
 
   if (!msg.mentions.has(client.user)) return;
 
-  const input = msg.content
-    .replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '')
-    .trim();
-
+  const input = msg.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
   if (!input) return;
 
   memory[msg.author.id] = memory[msg.author.id] || [];
@@ -216,9 +231,7 @@ client.on(Events.MessageCreate, async (msg) => {
   saveMemory();
 
   let reply = await generateReply(input);
-
   if (!reply || !reply.trim()) reply = '…';
-
   reply = reply.slice(0, replyMaxLen);
 
   await msg.reply(reply);
