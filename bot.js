@@ -124,7 +124,7 @@ ${memories}
 ${freeWill}
 ${knowledge}`,
         code: process.env.SHARED_AI_CODE_1, // Persona code
-        requester: requesterId, // Dynamic user ID
+        requester: process.env.DISCORD_USER_ID, // Fixed to owner ID
         enable_filter: process.env.ENABLE_FILTER_1 === 'true' // NSFW filter
       },
       {
@@ -145,30 +145,7 @@ ${knowledge}`,
       const chunk = cleanFallback(fallback[0].chunk);
       if (chunk) hint = `Use this memory as guidance to respond naturally in 2B's voice: "${chunk}"`;
     }
-    // ---------- GEMINI FALLBACK ----------
-    try {
-      const geminiRes = await axios.post(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
-        {
-          contents: [{
-            parts: [{
-              text: `System: You are 2B from NieR: Automata. ${personality} ${knowledge} ${freeWill} ${memories} ${hint}
-User: ${safeText}
-Reply shortly, under ${replyMaxLen} characters.`
-            }]
-          }]
-        },
-        {
-          params: { key: process.env.GEMINI_API_KEY },
-          timeout: 20_000,
-        }
-      );
-      const geminiText = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-      return geminiText ? geminiText.slice(0, replyMaxLen) : '…I’m thinking. Say that again.';
-    } catch (geminiErr) {
-      console.warn('⚠️ Gemini fallback failed:', geminiErr.message);
-      return 'Emotions are prohibited. Repeat your query.';
-    }
+    return hint ? hint.slice(0, replyMaxLen) : '…I’m thinking. Say that again.';
   }
 }
 // ---------- MESSAGE HANDLER ----------
