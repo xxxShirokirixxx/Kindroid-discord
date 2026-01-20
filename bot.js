@@ -1,13 +1,10 @@
 // bot.js - 2B Discord Bot (Polished + Stable January 2026, Free-Willed + Lifelike Version)
-
 require('dotenv').config();
-
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const https = require('https');
 const unzipper = require('unzipper');
-
 // Discord imports
 const { Client, GatewayIntentBits, Events } = require('discord.js');
 const {
@@ -15,13 +12,10 @@ const {
   getVoiceConnection,
   VoiceConnectionStatus,
 } = require('@discordjs/voice');
-
 // Voice / TTS
 const { speakInVC } = require('./voice.js');
-
 // Embeddings
 const { buildVectorStore, searchVectorStore } = require('./embeddings.js');
-
 // ---------- GLOBAL SAFETY ----------
 process.on('unhandledRejection', (err) => {
   if (err?.message?.includes('No compatible encryption modes')) {
@@ -30,22 +24,18 @@ process.on('unhandledRejection', (err) => {
   }
   console.error('Unhandled rejection:', err);
 });
-
 // ---------- VOSK SETUP ----------
 const VOSK_MODEL_URL =
   'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip';
 const VOSK_MODEL_DIR =
   process.env.VOSK_MODEL_DIR || path.join(__dirname, 'vosk-model-small-en-us-0.15');
-
 async function setupVoskModel() {
   if (fs.existsSync(VOSK_MODEL_DIR)) {
     console.log('Vosk model already exists.');
     return;
   }
-
   console.log('Downloading Vosk model...');
   const zipPath = path.join(__dirname, 'vosk-model.zip');
-
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(zipPath);
     https.get(VOSK_MODEL_URL, (res) => {
@@ -64,9 +54,7 @@ async function setupVoskModel() {
     }).on('error', reject);
   });
 }
-
 setupVoskModel().catch(console.error);
-
 // ---------- LOAD CONTEXT FILES ----------
 function readFileSafe(name) {
   try {
@@ -75,14 +63,11 @@ function readFileSafe(name) {
     return '';
   }
 }
-
 const personality = readFileSafe('personality.txt');
 const memories = readFileSafe('memories.txt');
 const freeWill = readFileSafe('free-will.txt');
 const knowledge = readFileSafe('knowledge.txt');
-
 const replyMaxLen = parseInt(process.env.REPLY_MAX_LEN || '200', 10);
-
 // ---------- VECTOR STORE ----------
 let vectorStore = [];
 (async () => {
@@ -94,17 +79,14 @@ let vectorStore = [];
   });
   console.log(`Vector store built with ${vectorStore.length} chunks.`);
 })();
-
 // ---------- MEMORY ----------
 const memoryPath = path.join(__dirname, 'memory.json');
 let memory = fs.existsSync(memoryPath)
   ? JSON.parse(fs.readFileSync(memoryPath, 'utf8'))
   : {};
-
 function saveMemory() {
   fs.writeFileSync(memoryPath, JSON.stringify(memory, null, 2));
 }
-
 // ---------- DISCORD CLIENT ----------
 const client = new Client({
   intents: [
@@ -115,12 +97,10 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
   ],
 });
-
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}!`);
   startFreeWillLoop();
 });
-
 // ---------- CLEANER ----------
 function cleanFallback(text) {
   return String(text)
@@ -129,12 +109,11 @@ function cleanFallback(text) {
     .replace(/\s+/g, ' ')
     .trim();
 }
-
 // ---------- REPLY GENERATION ----------
 async function generateReply(userText) {
   const safeText = typeof userText === 'string' ? userText : JSON.stringify(userText ?? '');
-
-  // ---------- PRIMARY ATTEMPT ----------
+  const requesterId = process.env.DISCORD_USER_ID; // ✅ 2B's Discord ID
+  // ---------- PRIMARY ATTEMPT: Kindroid ----------
   try {
     const res = await axios.post(
       process.env.KINDROID_INFER_URL,
@@ -145,7 +124,7 @@ ${personality}
 ${memories}
 ${freeWill}
 ${knowledge}`,
-        requester: client.user.id // ✅ added requester field
+        requester: requesterId
       },
       {
         headers: {
@@ -154,57 +133,50 @@ ${knowledge}`,
         timeout: 20_000,
       }
     );
-
     const text = String(res.data?.text || '').trim();
     if (text) return text.slice(0, replyMaxLen);
     throw new Error('Empty reply');
   } catch (err) {
     console.warn('⚠️ Kindroid failed, using memory-guided fallback:', err.message);
-
     const fallback = await searchVectorStore(safeText, vectorStore, 1);
     let hint = '';
     if (fallback?.[0]) {
       const chunk = cleanFallback(fallback[0].chunk);
       if (chunk) hint = `Use this memory as guidance to respond naturally in 2B's voice: "${chunk}"`;
     }
-
+    // ---------- GEMINI FALLBACK ----------
     try {
-      const res2 = await axios.post(
-        process.env.KINDROID_INFER_URL,
+      const geminiRes = await axios.post(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent',
         {
-          prompt: safeText,
-          system: `${personality}
-${knowledge}
-${freeWill}
-${memories}
-${hint}`,
-          requester: client.user.id // ✅ added requester field
+          contents: [{
+            parts: [{
+              text: `System: You are 2B from NieR: Automata. ${personality} ${knowledge} ${freeWill} ${memories} ${hint}
+User: ${safeText}
+Reply shortly, under ${replyMaxLen} characters.`
+            }]
+          }]
         },
         {
-          headers: {
-            Authorization: `Bearer ${process.env.KINDROID_API_KEY}`,
-          },
+          params: { key: process.env.GEMINI_API_KEY },
           timeout: 20_000,
         }
       );
-      const text2 = String(res2.data?.text || '').trim();
-      return text2 ? text2.slice(0, replyMaxLen) : '…I’m thinking. Say that again.';
-    } catch (err2) {
-      console.warn('⚠️ Fallback generation also failed:', err2.message);
+      const geminiText = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+      return geminiText ? geminiText.slice(0, replyMaxLen) : '…I’m thinking. Say that again.';
+    } catch (geminiErr) {
+      console.warn('⚠️ Gemini fallback failed:', geminiErr.message);
       return '…I’m thinking. Say that again.';
     }
   }
 }
-
 // ---------- MESSAGE HANDLER ----------
 client.on(Events.MessageCreate, async (msg) => {
   if (msg.author.bot) return;
-
   // Join voice manually
   if (msg.content === '!join') {
     const channel = msg.member?.voice.channel;
     if (!channel) return msg.reply('Join a voice channel first.');
-
     joinVoiceChannel({
       channelId: channel.id,
       guildId: channel.guild.id,
@@ -213,26 +185,19 @@ client.on(Events.MessageCreate, async (msg) => {
       selfMute: false,
       encryptionModes: ['aead_aes256_gcm_rtpsize', 'aead_xchacha20_poly1305_rtpsize'],
     });
-
     return msg.reply('…Connected.');
   }
-
   if (!msg.mentions.has(client.user)) return;
-
   const input = msg.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
   if (!input) return;
-
   memory[msg.author.id] = memory[msg.author.id] || [];
   memory[msg.author.id].push({ role: 'user', content: input });
   memory[msg.author.id] = memory[msg.author.id].slice(-10);
   saveMemory();
-
   let reply = await generateReply(input);
   if (!reply || !reply.trim()) reply = '…';
   reply = reply.slice(0, replyMaxLen);
-
   await msg.reply(reply);
-
   const vc = getVoiceConnection(msg.guild.id);
   if (vc && vc.state.status === VoiceConnectionStatus.Ready) {
     try {
@@ -242,56 +207,43 @@ client.on(Events.MessageCreate, async (msg) => {
     }
   }
 });
-
 // ---------- FREE WILL LOOP ----------
 function startFreeWillLoop() {
   const intervalMs = 50 * 60 * 1000; // every 50 minutes
+  const targetChannelId = '1365512487075708999'; // Restrict to this channel
   setInterval(async () => {
     try {
-      // 2B reacts to recent conversations
-      client.channels.cache
-        .filter(c => c.isTextBased())
-        .forEach(async (channel) => {
-          try {
-            const messages = await channel.messages.fetch({ limit: 10 });
-            const lastMessage = messages
-              .filter(m => !m.author.bot)
-              .first();
-            if (!lastMessage) return;
-
-            // 25% chance to reply naturally
-            if (Math.random() < 0.25) {
-              const reply = await generateReply(
-                `Reply naturally to this user message: "${lastMessage.content}"`
-              );
-              if (reply && reply.trim()) {
-                await channel.send(reply.slice(0, replyMaxLen));
-              }
-            }
-          } catch (e) {
-            console.warn('⚠️ Free-will conversation reply error:', e.message);
-          }
-        });
-
-      // 5% chance to join a random voice channel
+      const channel = client.channels.cache.get(targetChannelId);
+      if (!channel || !channel.isTextBased()) return;
+      const messages = await channel.messages.fetch({ limit: 10 });
+      const lastMessage = messages
+        .filter(m => !m.author.bot)
+        .first();
+      if (!lastMessage) return;
+      if (Math.random() < 0.25) {
+        const reply = await generateReply(
+          `Reply naturally to this user message: "${lastMessage.content}"`
+        );
+        if (reply && reply.trim()) {
+          await channel.send(reply.slice(0, replyMaxLen));
+        }
+      }
+      // Optional: Keep auto-join if desired, but restricted (e.g., to guild of target channel)
       if (Math.random() < 0.05) {
-        const guild = client.guilds.cache.random();
-        if (!guild) return;
-
-        const channel = guild.channels.cache
+        const guild = channel.guild;
+        const voiceChannel = guild.channels.cache
           .filter(c => c.isVoiceBased() && c.joinable)
           .random();
-
-        if (channel) {
+        if (voiceChannel) {
           joinVoiceChannel({
-            channelId: channel.id,
+            channelId: voiceChannel.id,
             guildId: guild.id,
             adapterCreator: guild.voiceAdapterCreator,
             selfDeaf: false,
             selfMute: false,
             encryptionModes: ['aead_aes256_gcm_rtpsize', 'aead_xchacha20_poly1305_rtpsize'],
           });
-          console.log(`2B joined voice channel ${channel.name} in ${guild.name} of her own free will.`);
+          console.log(`2B joined voice channel ${voiceChannel.name} in ${guild.name} of her own free will.`);
         }
       }
     } catch (e) {
@@ -299,7 +251,6 @@ function startFreeWillLoop() {
     }
   }, intervalMs);
 }
-
 // ---------- LOGIN ----------
 client.login(process.env.BOT_TOKEN_1).catch((err) => {
   console.error('Login failed:', err);
