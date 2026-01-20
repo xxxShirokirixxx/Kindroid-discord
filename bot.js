@@ -123,8 +123,9 @@ ${personality}
 ${memories}
 ${freeWill}
 ${knowledge}`,
-        code: process.env.SHARED_AI_CODE_1,  // Add persona code
-        requester: requesterId
+        code: process.env.SHARED_AI_CODE_1, // Persona code
+        requester: requesterId, // Dynamic user ID
+        enable_filter: process.env.ENABLE_FILTER_1 === 'true' // NSFW filter
       },
       {
         headers: {
@@ -147,7 +148,7 @@ ${knowledge}`,
     // ---------- GEMINI FALLBACK ----------
     try {
       const geminiRes = await axios.post(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
+        'https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent',
         {
           contents: [{
             parts: [{
@@ -194,7 +195,7 @@ client.on(Events.MessageCreate, async (msg) => {
   memory[msg.author.id].push({ role: 'user', content: input });
   memory[msg.author.id] = memory[msg.author.id].slice(-10);
   saveMemory();
-  let reply = await generateReply(input, msg.author.id);  // Dynamic requester
+  let reply = await generateReply(input, msg.author.id); // Dynamic requester
   if (!reply || !reply.trim()) reply = '…';
   reply = reply.slice(0, replyMaxLen);
   await msg.reply(reply);
@@ -223,7 +224,7 @@ function startFreeWillLoop() {
       if (Math.random() < 0.25) {
         const reply = await generateReply(
           `Reply naturally to this user message: "${lastMessage.content}"`,
-          lastMessage.author.id  // Dynamic requester from last message
+          lastMessage.author.id // Dynamic requester from last message
         );
         if (reply && reply.trim()) {
           await channel.send(reply.slice(0, replyMaxLen));
