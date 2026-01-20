@@ -110,9 +110,8 @@ function cleanFallback(text) {
     .trim();
 }
 // ---------- REPLY GENERATION ----------
-async function generateReply(userText) {
+async function generateReply(userText, requesterId) {
   const safeText = typeof userText === 'string' ? userText : JSON.stringify(userText ?? '');
-  const requesterId = process.env.DISCORD_USER_ID; // ✅ 2B's Discord ID
   // ---------- PRIMARY ATTEMPT: Kindroid ----------
   try {
     const res = await axios.post(
@@ -124,6 +123,7 @@ ${personality}
 ${memories}
 ${freeWill}
 ${knowledge}`,
+        code: process.env.SHARED_AI_CODE_1,  // Add persona code
         requester: requesterId
       },
       {
@@ -147,7 +147,7 @@ ${knowledge}`,
     // ---------- GEMINI FALLBACK ----------
     try {
       const geminiRes = await axios.post(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent',
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
         {
           contents: [{
             parts: [{
@@ -194,7 +194,7 @@ client.on(Events.MessageCreate, async (msg) => {
   memory[msg.author.id].push({ role: 'user', content: input });
   memory[msg.author.id] = memory[msg.author.id].slice(-10);
   saveMemory();
-  let reply = await generateReply(input);
+  let reply = await generateReply(input, msg.author.id);  // Dynamic requester
   if (!reply || !reply.trim()) reply = '…';
   reply = reply.slice(0, replyMaxLen);
   await msg.reply(reply);
@@ -222,7 +222,8 @@ function startFreeWillLoop() {
       if (!lastMessage) return;
       if (Math.random() < 0.25) {
         const reply = await generateReply(
-          `Reply naturally to this user message: "${lastMessage.content}"`
+          `Reply naturally to this user message: "${lastMessage.content}"`,
+          lastMessage.author.id  // Dynamic requester from last message
         );
         if (reply && reply.trim()) {
           await channel.send(reply.slice(0, replyMaxLen));
