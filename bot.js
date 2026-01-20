@@ -148,7 +148,7 @@ ${knowledge}`,
     // ---------- GEMINI FALLBACK ----------
     try {
       const geminiRes = await axios.post(
-        'https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent',
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
         {
           contents: [{
             parts: [{
@@ -167,7 +167,7 @@ Reply shortly, under ${replyMaxLen} characters.`
       return geminiText ? geminiText.slice(0, replyMaxLen) : '…I’m thinking. Say that again.';
     } catch (geminiErr) {
       console.warn('⚠️ Gemini fallback failed:', geminiErr.message);
-      return '…I’m thinking. Say that again.';
+      return 'Emotions are prohibited. Repeat your query.';
     }
   }
 }
